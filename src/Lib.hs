@@ -1,7 +1,7 @@
 {-# LANGUAGE DataKinds #-}
 
 module Lib
-  ( plugin,
+  ( plugin, ghcideEntry, ConstraintsMap, Error(..)
   )
 where
 
@@ -19,7 +19,10 @@ import Scheme
 import Guards
 import System.Directory
 import TcRnMonad
+import Data.Bifunctor
 import Prelude hiding (mod)
+import DmdAnal
+import ToIface
 
 plugin :: Plugin
 plugin = defaultPlugin {pluginRecompile = \_ -> return NoForceRecompile, installCoreToDos = install}
@@ -28,6 +31,24 @@ plugin = defaultPlugin {pluginRecompile = \_ -> return NoForceRecompile, install
 
 interfaceName :: ModuleName -> FilePath
 interfaceName = ("interface/" ++) . moduleNameString
+
+type ConstraintsMap = M.Map Name (Scheme IfaceTyCon [[Guard]])
+
+ghcideEntry :: M.Map Name (Scheme IfaceTyCon [[Guard]])
+            -> ModGuts
+            -> CoreM (Either Error (M.Map Name (Scheme IfaceTyCon [[Guard]])))
+ghcideEntry env mg = do
+  let p = mg_binds mg
+      cm = mg_module mg
+  dflags <- getDynFlags
+  p_fam_env <- getPackageFamInstEnv
+  let fam_envs = (p_fam_env, mg_fam_inst_env mg)
+  p <- liftIO $ dmdAnalProgram dflags fam_envs p
+  e <- runInferM (inferProg (dependancySort p) >>= mapM (mapM toList)) True True False cm env
+  return $ case e of
+    Left e -> Left e
+    Right m -> Right (M.map (first toIfaceTyCon) m)
+
 
 inferGuts :: [CommandLineOption] -> ModGuts -> CoreM ModGuts
 inferGuts cmd guts@ModGuts {mg_deps = d, mg_module = m, mg_binds = p} = do
